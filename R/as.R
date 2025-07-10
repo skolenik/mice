@@ -25,7 +25,7 @@
 #' is found, the values in the column will define the row names in
 #' the \code{data} element of the resulting \code{mids} object.
 #' @inheritParams mice
-#' @return An object of class \code{mids}
+#' @returns An object of class [mids]
 #' @author Gerko Vink
 #' @examples
 #' # impute the nhanes dataset
@@ -119,7 +119,7 @@ as.mids <- function(long, where = NULL, .imp = ".imp", .id = ".id") {
     varname <- names[i]
     if (nrow(ini$imp[[varname]])) {
       for (j in seq_len(m)) {
-        idx <- imps == j & where[, varname]
+        idx <- (imps == j) & unlist(where[, varname])
         ini$imp[[varname]][j] <- long[idx, varname]
       }
     }
@@ -133,7 +133,7 @@ as.mids <- function(long, where = NULL, .imp = ".imp", .id = ".id") {
 #' complete-data analysis stored as a list, and turns it
 #' into a \code{mira} object that can be pooled.
 #' @param fitlist A list containing $m$ fitted analysis objects
-#' @return An S3 object of class \code{mira}.
+#' @returns An S3 object of class [mira].
 #' @seealso \code{\link{mira}}
 #' @author Stef van Buuren
 #' @export
