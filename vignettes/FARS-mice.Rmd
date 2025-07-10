@@ -17,11 +17,13 @@ knitr::opts_chunk$set(
 ```
 
 ```{r setup, include=FALSE}
-library(mice)  # target package to deal with multiple imputation
-library(haven) # to read SAS files
-library(dplyr) # manipulations
-library(janitor) # occasional tabulations
-library(stringr) # string processing
+library(mice)     # target package to deal with multiple imputation
+library(haven)    # to read SAS files
+library(dplyr)    # manipulations
+library(janitor)  # occasional tabulations
+library(stringr)  # string processing
+library(tidyr)    # reshape; functionality is imported to dplyr
+library(labelled) # to deal with as.factor() gracefully
 ```
 
 ## FARS data
@@ -103,17 +105,20 @@ a valid `mice` object from the imputed data sets.
 ## FARS data
 
 ```{r get-fars}
-fars_url <- "https://static.nhtsa.gov/nhtsa/downloads/FARS/2022/National/FARS2022NationalSAS.zip"
+if (! file.exists("FARS2022NationalSAS.zip")) {
 
-on.exit({
-  # remove the downloaded data set
-  unlink("FARS2022NationalSAS.zip")
-  # remove everything that was unzipped
-  unlink("FARS2022NationalSAS", recursive = TRUE)
-})
-
-fars_zip <- download.file(fars_url, file.path(getwd(), "FARS2022NationalSAS.zip") )
-unzip(file.path(getwd(), "FARS2022NationalSAS.zip"))
+  fars_url <- "https://static.nhtsa.gov/nhtsa/downloads/FARS/2022/National/FARS2022NationalSAS.zip"
+  
+  on.exit({
+    # remove the downloaded data set
+    unlink("FARS2022NationalSAS.zip")
+    # remove everything that was unzipped
+    unlink("FARS2022NationalSAS", recursive = TRUE)
+  })
+  
+  fars_zip <- download.file(fars_url, file.path(getwd(), "FARS2022NationalSAS.zip") )
+  unzip(file.path(getwd(), "FARS2022NationalSAS.zip"))
+}
 
 accident <- haven::read_sas(data_file = "FARS2022NationalSAS/accident.sas7bdat", 
             catalog_file="FARS2022NationalSAS/format-Viya/formats.sas7bcat")
@@ -133,13 +138,18 @@ with other datasets in the system: `ST_CASE` uniquely identifies crashes
 (within the year of data),
 `VEH_NO` identifies vehicles within the crash (0 for non-motorists)
 and `PER_NO` identifies individuals within the vehicle / non-motorists
-outside any vehicle. The variable `PER_TYP` is the role the person 
+outside any vehicle. 
+
+```{r fars-person}
+head(person)
+```
+
+The variable `PER_TYP` is the role the person 
 played in the crash (1: driver; 2: passenger; 3: occupant of a vehicle
 not in transport, 5: pedestrian, 6: bicyclist, 9: unknown occupant
 of a vehicle in transport; etc.)
 
-```{r fars-person}
-head(person)
+```{r person-pertyp}
 person %>% count(PER_TYP) %>% print(n=15)
 ```
 
@@ -199,7 +209,8 @@ miper %>%
   arrange(desc(n)) 
 ```
 
-This generally holds, although some imputed values for unknown `ALC_RES` do not vary.
+This generally holds, although for a very considerable fraction of the data set
+(15K cases out of 70K), imputed values for unknown `ALC_RES` do not vary.
 A little bit of investigation reveals that these are imputed as identically zero
 between imputations.
 
@@ -241,9 +252,10 @@ person %>% select(ST_CASE, VEH_NO, PER_NO) %>% summary()
 ```
 
 Roughly speaking,
-`ST_CASE` is 6 digits (the first two are the U.S. state), `VEH_NO` is two digits,
-and `PER_NO` is two digits. We can thus produce an identifier stringing the three
-together:
+`ST_CASE` is 6 digits (the first two are the U.S. state), 
+`VEH_NO` is two digits (there are no fatal crashes with 100+ vehicles),
+and `PER_NO` is two digits (there are no fatal crashes with 100+ people). 
+We can thus produce an identifier stringing the three together:
 
 ```{r person-id}
 person %>% 
@@ -285,9 +297,13 @@ head(miper_long)
 ```
 
 The `long` argument of `mice::as.mids()` should mirror the output
-of `mice::complete(..., action = 'long', include = TRUE)`, so it would need to have
-all of the variables in the data set. Thus we replicate
-each line in the data set $M$ times (which is derived from the `miper_long` dataset.)
+of `mice::complete(..., action = 'long', include = TRUE)`, so it would need to 
+
+1. have all of the variables in the data set, and
+2. have the data sorted by replicate and then by ID. 
+
+Thus we replicate
+each line in the data set $M$ times (that number is derived from the `miper_long` dataset.)
 The observations with `imp_index==0` should provide the original data set 
 with missing values.
 
@@ -303,7 +319,8 @@ person %>%
     imp_index == 0 & ALC_RES < 900 ~ ALC_RES,
     imp_index == 0 & ALC_RES > 900 ~ as.double(NA),
     TRUE ~ as.double(NA)
-  )) -> person_long
+  )) %>% 
+  arrange(imp_index, person_id) -> person_long
 ```
 
 
@@ -330,19 +347,70 @@ full_join(person, miper %>% select(ST_CASE, VEH_NO, PER_NO, P1),
   mutate(PER_BAC = is.na(P1)) %>% 
   select(-P1) %>% 
   # deselecting the last two columns: person_id and PER_BAC
-  mutate(across(.cols = 1:last_col(offset=2L), .fns = ~ FALSE) ) -> 
-  person_where
+  mutate(across(.cols = 1:last_col(offset=2L), .fns = ~ FALSE) ) %>% 
+  arrange(person_id) -> person_where
 ```
 
 ### Putting it all together
 
+As the `person_id` is consumed by `mice` when processing the data,
+the `where` argument of `as.mids()` needs to exclude it:
+
 ```{r person_as_mids}
-as.mids(
-  long  = person_long %>% arrange(imp_index, person_id),
+miper_mids <- as.mids(
+  long  = person_long,
   where = person_where %>% select(-person_id),
   .imp  = "imp_index",
-  .id   = "person_id"
+  .id   = "person_id",
+  printFlag = FALSE
 )
 ```
 
+The online book "Flexible Imputation of Missing Data"
+discusses several possible workflows. 
+Workflow 1 is the "base R" flavor using `with()` and `mice::pool()`:
 
+```{r drink_by_time1}
+drink_by_hour_run <- with(data = miper_mids, 
+                          lm(PER_BAC ~ 0 + as.factor(HOUR)))
+drink_by_hour_est1 <- pool(drink_by_hour_run)
+drink_by_hour_est1$pooled %>% knitr::kable()
+```
+
+This approach makes it rather difficult to customize analysis,
+e.g. to restrict it to drivers. 
+It is possible to do so with workflow 7. 
+Instead of creating the interim `mids` object,
+it deals with the "long" file directly:
+
+```{r drink_by_time7}
+person_long %>% 
+  filter(imp_index > 0) %>% 
+  group_by(imp_index) %>%
+  do(model = lm(formula = PER_BAC ~ 0 + as.factor(HOUR), 
+                data = subset(., PER_TYP==1))) %>%
+  as.list() %>%
+  .[[-1]] %>%
+  pool() -> drink_by_hour_est7
+drink_by_hour_est7$pooled %>% knitr::kable()
+```
+
+Both sets of estimates point to elevated presence of alcohol late at night.
+The estimates do not agree with one another; while technically they are based on
+different subsets, the first set of estimates well in excess of 0.10% BAC
+seem to indicate that all crashes happen with heavily intoxicated drivers,
+and that just isn't so. 
+
+(We will investigate the problem; it is yet unclear what's going on there.
+The second set of estimates, with average BAC levels varying from 
+`r summary(drink_by_hour_est7)$estimate %>% min() %>% round(digits=1) / 100`%
+midday to
+`r summary(drink_by_hour_est7)$estimate %>% max() %>% round(digits=1) / 100`%
+soon after midnight is far more realistic. 
+The MI diagnostics, namely the fraction of missing
+information that ranges from
+`r drink_by_hour_est7$pooled$fmi %>% min() %>% round(digits=2) * 100`%
+midday, when most crashes do not involve alcohol and have imputed 
+values of zero, to
+`r drink_by_hour_est7$pooled$fmi %>% max() %>% round(digits=2) * 100`%
+at night, is also more realistic.
