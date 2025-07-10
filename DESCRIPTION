@@ -64,7 +64,7 @@ Imports:
     utils
 Suggests:
     broom.mixed,
-    future, 
+    future,
     furrr,
     haven,
     knitr,
@@ -80,7 +80,9 @@ Suggests:
     rmarkdown,
     rstan,
     survival,
-    testthat
+    testthat,
+    janitor,
+    stringr
 Description: Multiple imputation using Fully Conditional Specification (FCS)
     implemented by the MICE algorithm as described in Van Buuren and
     Groothuis-Oudshoorn (2011) <doi:10.18637/jss.v045.i03>. Each variable has

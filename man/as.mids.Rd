@@ -35,7 +35,7 @@ is found, the values in the column will define the row names in
 the \code{data} element of the resulting \code{mids} object.}
 }
 \value{
-An object of class \code{mids}
+An object of class \link{mids}
 }
 \description{
 This function converts imputed data stored in long format into

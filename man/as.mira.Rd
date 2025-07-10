@@ -10,7 +10,7 @@ as.mira(fitlist)
 \item{fitlist}{A list containing $m$ fitted analysis objects}
 }
 \value{
-An S3 object of class \code{mira}.
+An S3 object of class \link{mira}.
 }
 \description{
 The \code{as.mira()} function takes the results of repeated
