@@ -1,1 +1,7 @@
 /.quarto/
+*.html
+*.R
+
+# specific to the FARS vignette although these should be interim files
+FARS2022NationalSAS/
+FARS2022NationalSAS.zip

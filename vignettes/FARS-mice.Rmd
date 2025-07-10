@@ -1,0 +1,348 @@
+---
+title: "Using mice for multiply imputed FARS data"
+author: "Stas Kolenikov"
+date: "2025-07-09"
+output: rmarkdown::html_vignette
+vignette: >
+  %\VignetteIndexEntry{FARS-2}
+  %\VignetteEngine{knitr::rmarkdown}
+  %\VignetteEncoding{UTF-8}
+---
+
+```{r, include = FALSE}
+knitr::opts_chunk$set(
+  collapse = TRUE,
+  comment = "#>"
+)
+```
+
+```{r setup, include=FALSE}
+library(mice)  # target package to deal with multiple imputation
+library(haven) # to read SAS files
+library(dplyr) # manipulations
+library(janitor) # occasional tabulations
+library(stringr) # string processing
+```
+
+## FARS data
+
+[Fatality Analysis Reporting) System](https://www.nhtsa.gov/research-data/fatality-analysis-reporting-system-fars) 
+is a census of all police-reported 
+fatal crashes in the United States, assembled and maintained
+by the [National Highway Traffic Safety Administration](https://www.nhtsa.gov/) (NHTSA), 
+part of the [U.S. Department of Transportation](https://www.dot.gov/).
+Each year, FARS public data use files are released
+as a set of 20+ files, linkable by specific
+stable IDs across the files (see "proper" p. 14 / overall p. 19
+of the [Analytic Users Manual](https://crashstats.nhtsa.dot.gov/Api/Public/ViewPublication/813706)).
+
+One of the FARS variables is multiply imputed:
+blood alcohol content (BAC). The variable is missing in about 25%
+of the raw data, but given its high policy relevance,
+a custom imputation model for it was built at the time
+of multiple imputation adolescence
+([Rubin, Schaffer and Subramanian (1998)](https://crashstats.nhtsa.dot.gov/Api/Public/ViewPublication/808816)): 
+by that time, the idea had been in the literature for two decades and quite well studied,
+but the software to work with multiply imputed data
+was not standardized and streamlined, leaving MI
+an artisan data solution. The imputation model involves:
+
+1. Separating cases by vehicle class (passenger cars;
+utility vehicles; light trucks and vans; minivans; 
+medium and heavy trucks; motorcycles; non-motorists; 
+other/miscellaneous vehicles).
+2. Loglinear modeling of the dichotomized BAC variable
+(i.e. presence of any alcohol), with age, sex, injury severity,
+license status, day of week, hour, vehicle role in crash, relation to roadway,
+driver's previous incidents, use of restraint as 
+potential covariates.
+3. Box-Cox transformation of nonzero BAC values.
+4. Model selection for nonzero values.
+5. Multiple imputation of $M=10$ values using MCMC draws with chains 
+started near the maximum likelihood estimates of the imputation model 
+parameters followed by back transformation to the original BAC scale.
+
+The results are released in the file 
+`miper`, and they are aggregated to the crash level
+(the highest BAC among all persons involved in the crash in `miacc` file, 
+and the highest BAC among all drivers in `midrvacc` file). These files are presented in the wide format
+(i.e., each row of the dataset represents one row
+of the original data, and the imputations are identified
+by suffixes of the column names of the imputed variables,
+e.g. `P1` through `P10` in `miper` file).
+
+## Foundations of MI and `mice` package
+
+## Requirements of `mice` package workflow
+
+The multiply imputed data sets are not simple rectangular 
+data frames. The objects that `mice` package works with are 
+[sophisticated data objects](https://amices.org/mice/reference/mids.html) enriched with all
+of the appropriate metadata documenting the missing
+data patterns and imputation process
+(location of the item missing values in the data set,
+imputation models used, covariates used in each model,
+information about the imputation chains, random seeds
+used by each chain, etc.)
+
+In the [standard `mice` workflow](https://stefvanbuuren.name/fimd/workflow.html),
+the researcher: 
+
+1. passes the data set and imputation model definitions to `mice::mice()`,
+2. runs the imputation models with `mice::complete()`, 
+3. iterates over the imputed data sets using `with()` or `Map()` 
+   or `lapply()` or `purrr::map()`, i.e. wrappers around the `for` loops;
+4. combines the imputations using Rubin's rules with `mice::pool()`.
+
+While the `mice` package generally prefers to impute the data
+itself, it is possible to import externally imputed data
+such as FARS, skipping steps 1 and 2. This task is performed
+by `mice::as.mids()` function that helps researcher create
+a valid `mice` object from the imputed data sets.
+
+## FARS data
+
+```{r get-fars}
+fars_url <- "https://static.nhtsa.gov/nhtsa/downloads/FARS/2022/National/FARS2022NationalSAS.zip"
+
+on.exit({
+  # remove the downloaded data set
+  unlink("FARS2022NationalSAS.zip")
+  # remove everything that was unzipped
+  unlink("FARS2022NationalSAS", recursive = TRUE)
+})
+
+fars_zip <- download.file(fars_url, file.path(getwd(), "FARS2022NationalSAS.zip") )
+unzip(file.path(getwd(), "FARS2022NationalSAS.zip"))
+
+accident <- haven::read_sas(data_file = "FARS2022NationalSAS/accident.sas7bdat", 
+            catalog_file="FARS2022NationalSAS/format-Viya/formats.sas7bcat")
+vehicle <- haven::read_sas(data_file = "FARS2022NationalSAS/vehicle.sas7bdat", 
+            catalog_file="FARS2022NationalSAS/format-Viya/formats.sas7bcat")
+person <- haven::read_sas(data_file = "FARS2022NationalSAS/person.sas7bdat", 
+            catalog_file="FARS2022NationalSAS/format-Viya/formats.sas7bcat")
+miper <- haven::read_sas(data_file = "FARS2022NationalSAS/miper.sas7bdat", 
+            catalog_file="FARS2022NationalSAS/format-Viya/formats.sas7bcat")
+```
+
+
+Let us take a look at the FARS person-level data.
+The dataset `person` lists all people involved in the registered crashes.
+The stable ID variables in this data set can be used to join it
+with other datasets in the system: `ST_CASE` uniquely identifies crashes
+(within the year of data),
+`VEH_NO` identifies vehicles within the crash (0 for non-motorists)
+and `PER_NO` identifies individuals within the vehicle / non-motorists
+outside any vehicle. The variable `PER_TYP` is the role the person 
+played in the crash (1: driver; 2: passenger; 3: occupant of a vehicle
+not in transport, 5: pedestrian, 6: bicyclist, 9: unknown occupant
+of a vehicle in transport; etc.)
+
+```{r fars-person}
+head(person)
+person %>% count(PER_TYP) %>% print(n=15)
+```
+
+The imputed dataset `miper` only has the IDs necessary for joins,
+and imputed values in _wide_ format:
+
+```{r fars-miper}
+head(miper)
+```
+
+We can verify that imputated values are provided for all active 
+traffic participants (drivers, pedestrians, bicyclists, off-duty
+commercial vehicle operators, etc.):
+
+```{r fars-miper-pertyp}
+full_join(person, miper, by=c("ST_CASE", "VEH_NO", "PER_NO")) %>% 
+  mutate(is_imputed = !is.na(P1)) %>% 
+  janitor::tabyl(PER_TYP, is_imputed) %>% 
+  print(n=15)
+```
+
+In the original `person` file, there are several variables related to 
+alcohol status:
+
+- `DRINKING` (0: no/alcohol not involved; 1 Yes/alcohol involved; 
+   8: not reported; 9: reported as unknown): values 8 and 9 encode missing data;
+- `ALC_STATUS` (0: test not given; 2: test given; 8: not reported;
+   9: reported as unknown if tested); again values 8 and 9 encode missing data;
+- `ATST_TYP`: type of alcohol test;   
+- `ALC_RES`: a three digit result code; 
+   [BAC](https://en.wikipedia.org/wiki/Blood_alcohol_content) is measured 
+   as grams per 100 ml of blood, with values in the range of 0.01-0.20,
+   with values above 0.40 potentially fatal. The meaningful values of `ALC_RES`
+   are the thousands of the BAC content, so the value `ALC_RES==93` means
+   BAC of 0.093 (3 drinks for a woman who weighs 160 lbs/73 kg; 
+   4 drinks for a man that size; quite above the legal limit of 0.08 in 
+   most US states, way above the legal limit of 0.05 enacted in Utah,
+   and the limit of 0.04 for commercial vehicle drivers.)
+   
+We can verify that for persons eligible for imputation with unknown
+alcohol test results, the imputations were made; while for those 
+with known results, imputed values are constant. We should expect
+that for known values of `ALC_RES` (in single, double and low triple
+digits), imputations should not vary, while for the unknown `ALC_RES`
+(990s), there should be imputations with non-trivial values. 
+
+```{r fars-imputed-vary}
+miper %>%
+  rowwise(ST_CASE, VEH_NO, PER_NO ) %>% 
+  summarize(imp_sd = sd( c_across(matches("P[0-9]+") ) ) ) %>% 
+  mutate(imputations_vary = (imp_sd>0)) %>% 
+  ungroup() %>% 
+  full_join(person, by=c("ST_CASE", "VEH_NO", "PER_NO")) %>% 
+  filter(! PER_TYP %in% c(2, 3, 4)) %>% 
+  # count(DRINKING, ALC_STATUS, ALC_RES<900, imputations_vary) %>%
+  count(ALC_RES<900, imputations_vary) %>% 
+  arrange(desc(n)) 
+```
+
+This generally holds, although some imputed values for unknown `ALC_RES` do not vary.
+A little bit of investigation reveals that these are imputed as identically zero
+between imputations.
+
+```{r fars-imputed-vary-zero}
+miper %>%
+  rowwise(ST_CASE, VEH_NO, PER_NO ) %>% 
+  summarize(imp_sd = sd( c_across(matches("P[0-9]+") ) ), 
+            imp_zero = (max( c_across(matches("P[0-9]+") ) ) == 0) ) %>% 
+  mutate(imputations_vary = (imp_sd>0)) %>% 
+  ungroup() %>% 
+  full_join(person, by=c("ST_CASE", "VEH_NO", "PER_NO")) %>% 
+  filter(! PER_TYP %in% c(2, 3, 4)) %>% 
+  count(ALC_RES<900, imputations_vary, imp_zero) %>% 
+  arrange(desc(n)) 
+```
+
+In the substantive context, this may be making sense:
+commercial drivers should not be expected to be under influence, ever; and 
+most drunk driving will probably be happening at night; both vehicle
+type and time of crash are predictors in the imputation model, as described above.
+
+## Folding FARS MI data into `mice`
+
+As mentioned above, the functionality to ingest externally imputed data
+is provided by `mice::as.mids()` (see compiled documentation at 
+https://amices.org/mice/reference/as.mids.html). 
+All four inputs of that function needs to be customly specified 
+with FARS MI data.
+
+### Case identifiers
+
+We will start with the last argument of `mice::as.mids()`, namely `.id`
+which records the single column that identifies cases in the original data.
+In FARS `person` file, three combination of three variables identifies the case,
+so an appropriate combination of those is needed. 
+
+```{r person-max}
+person %>% select(ST_CASE, VEH_NO, PER_NO) %>% summary()
+```
+
+Roughly speaking,
+`ST_CASE` is 6 digits (the first two are the U.S. state), `VEH_NO` is two digits,
+and `PER_NO` is two digits. We can thus produce an identifier stringing the three
+together:
+
+```{r person-id}
+person %>% 
+  mutate(person_id = stringr::str_c(
+    ST_CASE %>% stringr::str_pad(width=6, side="left", pad="0"),
+    VEH_NO  %>% stringr::str_pad(width=2, side="left", pad="0"),
+    PER_NO  %>% stringr::str_pad(width=2, side="left", pad="0")
+  )) -> person
+stopifnot( nrow(person) == nrow(distinct(person, person_id) ) )
+```
+
+Note the immediate check that the resulting variable is indeed a unique identifier.
+
+We will repeat the process with other data sets as needed.
+
+### Data set in the long form
+
+The first, `long` argument of `mice::as.mids()` explicitly requires that 
+the data are in the long format, i.e. each row of the long data set
+is "original observation $\times$ imputation replicate". 
+While we reshape the data set to the long format, we will also
+rename the relatively uninformative variable `P` to something 
+[more powerfully named](https://www.oreilly.com/library/view/code-complete-2nd/0735619670/ch11.html).
+We will call the imputation index `imp_index`.
+
+```{r mipar-to-long}
+miper %>% 
+  tidyr::pivot_longer(cols      = matches("P[0-9]+"),
+                      names_to  = "imp_index", 
+                      names_prefix = "P", names_transform = list(imp_index=as.integer),
+                      values_to = "PER_BAC") %>%
+  mutate(person_id = stringr::str_c(
+    ST_CASE %>% stringr::str_pad(width=6, side="left", pad="0"),
+    VEH_NO  %>% stringr::str_pad(width=2, side="left", pad="0"),
+    PER_NO  %>% stringr::str_pad(width=2, side="left", pad="0")
+  )) %>% 
+  select(person_id, imp_index, PER_BAC) -> miper_long
+head(miper_long)
+```
+
+The `long` argument of `mice::as.mids()` should mirror the output
+of `mice::complete(..., action = 'long', include = TRUE)`, so it would need to have
+all of the variables in the data set. Thus we replicate
+each line in the data set $M$ times (which is derived from the `miper_long` dataset.)
+The observations with `imp_index==0` should provide the original data set 
+with missing values.
+
+```{r person-long}
+person %>% 
+  distinct(person_id) %>% 
+  cross_join(data.frame(imp_index=0:max(miper_long$imp_index))) %>% 
+  full_join(person, by="person_id") %>% 
+  full_join(miper_long, by=c("person_id", "imp_index")) %>% 
+  mutate(PER_BAC = case_when(
+    # imputed data
+    imp_index > 0 ~ PER_BAC,
+    imp_index == 0 & ALC_RES < 900 ~ ALC_RES,
+    imp_index == 0 & ALC_RES > 900 ~ as.double(NA),
+    TRUE ~ as.double(NA)
+  )) -> person_long
+```
+
+
+### Missing data patterns in the original data
+
+The second, `where` argument of `mice::as.mids()` needs to identify
+the locations in the original dataset where the missing values
+are encountered. This has to be carefully constructed for FARS:
+all of the existing values in the `person` file should be treated
+as "known"; the values of BAC where imputations are made available
+should be treated as missing; the missing values that are not eligible
+for imputation (e.g. passengers, `PER_TYP==2`) can be excluded from
+the imputation exercise. Conceptually, it is the `$where` component
+of a `mice::mids` object, with value `TRUE` indicating that an imputation
+is needed/is made, and `FALSE` indicating that no imputation is needed/made.
+
+In creating the version of the `person` data set that aligns with
+this requirement, we will add `PER_BAC` column, i.e. named the same 
+way as we specified in the `miper_long` data set.
+
+```{r person-where}
+full_join(person, miper %>% select(ST_CASE, VEH_NO, PER_NO, P1), 
+          by=c("ST_CASE", "VEH_NO", "PER_NO")) %>% 
+  mutate(PER_BAC = is.na(P1)) %>% 
+  select(-P1) %>% 
+  # deselecting the last two columns: person_id and PER_BAC
+  mutate(across(.cols = 1:last_col(offset=2L), .fns = ~ FALSE) ) -> 
+  person_where
+```
+
+### Putting it all together
+
+```{r person_as_mids}
+as.mids(
+  long  = person_long %>% arrange(imp_index, person_id),
+  where = person_where %>% select(-person_id),
+  .imp  = "imp_index",
+  .id   = "person_id"
+)
+```
+
+
