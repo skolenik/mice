@@ -55,6 +55,10 @@ check.where <- function(where, data, blocks) {
   if (!all(dim(data) == dim(where))) {
     stop("Arguments `data` and `where` not of same size", call. = FALSE)
   }
+  
+  if ( !identical(colnames(data), colnames(where) ) ) {
+    stop("Columns of data and where are not the same or are not in the same order", call. = FALSE)
+  }
 
   where <- as.logical(as.matrix(where))
   if (anyNA(where)) {
