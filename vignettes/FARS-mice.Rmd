@@ -160,7 +160,7 @@ and imputed values in _wide_ format:
 head(miper)
 ```
 
-We can verify that imputated values are provided for all active 
+We can verify that imputed values are provided for all active 
 traffic participants (drivers, pedestrians, bicyclists, off-duty
 commercial vehicle operators, etc.):
 
@@ -367,19 +367,23 @@ miper_mids <- as.mids(
 ```
 
 The online book "Flexible Imputation of Missing Data"
-discusses several possible workflows. 
+discusses [several possible workflows](https://stefvanbuuren.name/fimd/workflow.html). 
 Workflow 1 is the "base R" flavor using `with()` and `mice::pool()`:
 
 ```{r drink_by_time1}
 drink_by_hour_run <- with(data = miper_mids, 
                           lm(PER_BAC ~ 0 + as.factor(HOUR)))
 drink_by_hour_est1 <- pool(drink_by_hour_run)
-drink_by_hour_est1$pooled %>% knitr::kable()
+drink_by_hour_est1$pooled %>% 
+  mutate(term = as.character(term), 
+         term = stringr::str_replace_all(term, stringr::fixed("as.factor(HOUR)"), "HOUR==")) %>% 
+  mutate(across(where(is.numeric), ~ round(.x, digits=3L))) %>% 
+  knitr::kable()
 ```
 
 This approach makes it rather difficult to customize analysis,
 e.g. to restrict it to drivers. 
-It is possible to do so with workflow 7. 
+The latter is possible to do so with workflow 7. 
 Instead of creating the interim `mids` object,
 it deals with the "long" file directly:
 
@@ -392,7 +396,11 @@ person_long %>%
   as.list() %>%
   .[[-1]] %>%
   pool() -> drink_by_hour_est7
-drink_by_hour_est7$pooled %>% knitr::kable()
+drink_by_hour_est7$pooled %>% 
+  mutate(term = as.character(term), 
+         term = stringr::str_replace_all(term, stringr::fixed("as.factor(HOUR)"), "HOUR==")) %>% 
+  mutate(across(where(is.numeric), ~ round(.x, digits=3L))) %>% 
+  knitr::kable()
 ```
 
 Both sets of estimates point to elevated presence of alcohol late at night.
@@ -413,4 +421,8 @@ information that ranges from
 midday, when most crashes do not involve alcohol and have imputed 
 values of zero, to
 `r drink_by_hour_est7$pooled$fmi %>% max() %>% round(digits=2) * 100`%
-at night, is also more realistic.
+at night, is also more realistic. 
+A combination of the relatively high estimates of BAC with
+relatively low level of FMI for the unknown
+time of crash (HOUR==99) seem to indicate that these tend to involve alcohol
+at night.
