@@ -24,6 +24,8 @@
 #' function searches for a variable named \code{".id"}. If this variable
 #' is found, the values in the column will define the row names in
 #' the \code{data} element of the resulting \code{mids} object.
+#' @param ... other parameters passed to [mice()].
+#' 
 #' @inheritParams mice
 #' @returns An object of class [mids]
 #' @author Gerko Vink
@@ -69,7 +71,7 @@
 #' identical(complete(test11, action = "long", include = TRUE), X)
 #' @keywords mids
 #' @export
-as.mids <- function(long, where = NULL, .imp = ".imp", .id = ".id") {
+as.mids <- function(long, where = NULL, .imp = ".imp", .id = ".id", ... ) {
   if (is.numeric(.imp)) .imp <- names(long)[.imp]
   if (is.numeric(.id)) .id <- names(long)[.id]
   if (!.imp %in% names(long)) stop("Imputation index `.imp` not found")
@@ -88,7 +90,11 @@ as.mids <- function(long, where = NULL, .imp = ".imp", .id = ".id") {
   data <- long[imps == 0, keep, drop = FALSE]
   n <- nrow(data)
   if (n == 0) {
-    stop("Original data not found.\n Use `complete(..., action = 'long', include = TRUE)` to save original data.")
+    stop( paste(
+      "Original data not found.\n",
+      "Use `complete(..., action = 'long', include = TRUE)` to save original data if you are working with mice,\n",
+      "or use .imp == 0 to identify the original data if you are working with external multiple imputations.")
+    )
   }
 
   # determine m
@@ -98,7 +104,8 @@ as.mids <- function(long, where = NULL, .imp = ".imp", .id = ".id") {
   if (is.null(where)) where <- is.na(data)
   ini <- mice(data,
     m = m, where = where, maxit = 0,
-    remove.collinear = FALSE, allow.na = TRUE
+    remove.collinear = FALSE, allow.na = TRUE,
+    ...
   )
 
   # create default .id when .id using type from input data
