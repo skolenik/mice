@@ -305,7 +305,9 @@ of `mice::complete(..., action = 'long', include = TRUE)`, so it would need to
 Thus we replicate
 each line in the data set $M$ times (that number is derived from the `miper_long` dataset.)
 The observations with `imp_index==0` should provide the original data set 
-with missing values.
+with missing values. 
+Later, `mice::as.mids()` requires the data to be sorted by imputation index,
+so that order is imposed.
 
 ```{r person-long}
 person %>% 
@@ -315,27 +317,41 @@ person %>%
   full_join(miper_long, by=c("person_id", "imp_index")) %>% 
   mutate(PER_BAC = case_when(
     # imputed data
-    imp_index > 0 ~ PER_BAC,
-    imp_index == 0 & ALC_RES < 900 ~ ALC_RES,
+    imp_index > 0                  ~ PER_BAC,
+    imp_index == 0 & ALC_RES < 900 ~ ALC_RES/10,
     imp_index == 0 & ALC_RES > 900 ~ as.double(NA),
     TRUE ~ as.double(NA)
   )) %>% 
   arrange(imp_index, person_id) -> person_long
 ```
 
+Note that `ALC_RES` is on a different scale than imputations
+in the `miper` data set: the BAC of 0.07 is coded as `P1==7`
+but `ALC_RES==70`. The values are brough down to the scale of 
+imputations.
 
 ### Missing data patterns in the original data
 
 The second, `where` argument of `mice::as.mids()` needs to identify
 the locations in the original dataset where the missing values
 are encountered. This has to be carefully constructed for FARS:
-all of the existing values in the `person` file should be treated
-as "known"; the values of BAC where imputations are made available
-should be treated as missing; the missing values that are not eligible
-for imputation (e.g. passengers, `PER_TYP==2`) can be excluded from
-the imputation exercise. Conceptually, it is the `$where` component
+
+  1. all of the existing values in the `person` file should be treated
+     as "known" (achieived by `mutate(across(...))` at the bottom of
+     the pipe below); 
+  2. the values of BAC where imputations are made available
+     should be treated as missing
+     (achieved by `!is.na(P1)` in the pipe below); 
+  3. the missing values that are not eligible for imputation 
+     (e.g. passengers, `PER_TYP==2`) can be excluded from
+     the imputation exercise (. 
+     
+Conceptually, it is the `$where` component
 of a `mice::mids` object, with value `TRUE` indicating that an imputation
-is needed/is made, and `FALSE` indicating that no imputation is needed/made.
+is needed/is made (and hence `P1` is not missing), 
+and `FALSE` indicating that no imputation is needed/made
+(all regular variables in `person` and ineligible persons 
+missing from `miper`).
 
 In creating the version of the `person` data set that aligns with
 this requirement, we will add `PER_BAC` column, i.e. named the same 
@@ -344,9 +360,10 @@ way as we specified in the `miper_long` data set.
 ```{r person-where}
 full_join(person, miper %>% select(ST_CASE, VEH_NO, PER_NO, P1), 
           by=c("ST_CASE", "VEH_NO", "PER_NO")) %>% 
-  mutate(PER_BAC = is.na(P1)) %>% 
+  mutate(PER_BAC = !is.na(P1)) %>% 
   select(-P1) %>% 
   # deselecting the last two columns: person_id and PER_BAC
+  # this is not the best practice as it is sensitive to column order
   mutate(across(.cols = 1:last_col(offset=2L), .fns = ~ FALSE) ) %>% 
   arrange(person_id) -> person_where
 ```
@@ -404,25 +421,25 @@ drink_by_hour_est7$pooled %>%
 ```
 
 Both sets of estimates point to elevated presence of alcohol late at night.
-The estimates do not agree with one another; while technically they are based on
-different subsets, the first set of estimates well in excess of 0.10% BAC
-seem to indicate that all crashes happen with heavily intoxicated drivers,
-and that just isn't so. 
+The estimates do not agree with one another, as they are based on
+different subsets. 
 
-(We will investigate the problem; it is yet unclear what's going on there.
-The second set of estimates, with average BAC levels varying from 
-`r summary(drink_by_hour_est7)$estimate %>% min() %>% round(digits=1) / 100`%
-midday to
-`r summary(drink_by_hour_est7)$estimate %>% max() %>% round(digits=1) / 100`%
-soon after midnight is far more realistic. 
-The MI diagnostics, namely the fraction of missing
-information that ranges from
-`r drink_by_hour_est7$pooled$fmi %>% min() %>% round(digits=2) * 100`%
-midday, when most crashes do not involve alcohol and have imputed 
-values of zero, to
-`r drink_by_hour_est7$pooled$fmi %>% max() %>% round(digits=2) * 100`%
-at night, is also more realistic. 
+There is a subtle story of how imputation worked told by the fraction
+of missing information (FMI). In a sense, low levels of BAC in the morning
+and in the afternoon are "easy to predict": there are few drunk drivers,
+and the missing values of BAC can often be predicted as zeroes. 
+While the data on BAC are missing, there is not much uncertainty
+as to the BAC levels, which is reflected in low levels of FMI.
+As drinking ramps up in the evening and at night, the missing values
+of BAC may have more variability when the extent of driver's intoxication
+cannot be established. FMI rises accordingly.
+
 A combination of the relatively high estimates of BAC with
 relatively low level of FMI for the unknown
 time of crash (HOUR==99) seem to indicate that these tend to involve alcohol
-at night.
+at night, when law enforcement discovers unconscious bodies 
+and has no way of establishing when the crash happened.
+The low FMI seems to indicate that the BAC levels encountered
+in those crashes that the levels of BAC were not hard to predict
+when they were missing.
+
