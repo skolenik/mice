@@ -4,7 +4,7 @@
 \alias{as.mids}
 \title{Converts an imputed dataset (long format) into a \code{mids} object}
 \usage{
-as.mids(long, where = NULL, .imp = ".imp", .id = ".id")
+as.mids(long, where = NULL, .imp = ".imp", .id = ".id", ...)
 }
 \arguments{
 \item{long}{A multiply imputed data set in long format, for example
@@ -33,6 +33,8 @@ indicating the subject identification. If not specified, then the
 function searches for a variable named \code{".id"}. If this variable
 is found, the values in the column will define the row names in
 the \code{data} element of the resulting \code{mids} object.}
+
+\item{...}{other parameters passed to \code{\link[=mice]{mice()}}.}
 }
 \value{
 An object of class \link{mids}
@@ -50,6 +52,8 @@ into the format used by \code{mice}.
 The function expects the input data \code{long} to be sorted by
 imputation number (variable \code{".imp"} by default), and in the
 same sequence within each imputation block.
+The rows with \code{.imp==0} need to identify the original data
+without the imputations.
 }
 \examples{
 # impute the nhanes dataset

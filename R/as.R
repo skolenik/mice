@@ -10,6 +10,8 @@
 #' @note The function expects the input data \code{long} to be sorted by
 #' imputation number (variable \code{".imp"} by default), and in the
 #' same sequence within each imputation block.
+#' The rows with \code{.imp==0} need to identify the original data
+#' without the imputations.
 #' @param long A multiply imputed data set in long format, for example
 #' produced by a call to \code{complete(..., action = 'long', include = TRUE)},
 #' or by other software.
@@ -72,10 +74,25 @@
 #' @keywords mids
 #' @export
 as.mids <- function(long, where = NULL, .imp = ".imp", .id = ".id", ... ) {
+  
+  # missing() states that it is only reliable if its argument has not been alterted
+  id_provided <- !missing(.id)
+  
   if (is.numeric(.imp)) .imp <- names(long)[.imp]
   if (is.numeric(.id)) .id <- names(long)[.id]
   if (!.imp %in% names(long)) stop("Imputation index `.imp` not found")
 
+  if (id_provided) {
+    # while sort order is expected, it will be helpful to impose it
+    long <- long[ order(unlist(long[,.imp]), unlist(long[,.id]) ), ]
+    
+    # do .id and .imp identify the data?
+    stopifnot(
+      "Columns .imp and .id do not identify cases uniquely in long" =
+        nrow(long) == nrow(unique(long[,c(.imp, .id)]) )
+    )
+  }
+  
   # no missings allowed in .imp
   imps <- unlist(long[, .imp], use.names = FALSE)
   if (anyNA(imps)) stop("Missing values in imputation index `.imp`")
@@ -99,6 +116,12 @@ as.mids <- function(long, where = NULL, .imp = ".imp", .id = ".id", ... ) {
 
   # determine m
   m <- length(unique(imps)) - 1
+  
+  # check the values of .imp
+  stopifnot(
+    "The values of .imp are not 0 for original data and 1:m for imputed data" =
+    unlist(unique(long[[.imp]])) == 0:m
+  )
 
   # use mice to get info on data
   if (is.null(where)) where <- is.na(data)
@@ -126,12 +149,15 @@ as.mids <- function(long, where = NULL, .imp = ".imp", .id = ".id", ... ) {
     varname <- names[i]
     if (nrow(ini$imp[[varname]])) {
       for (j in seq_len(m)) {
+        # the first argument is of length == nrow(long)
+        # the second argument is of length == nrow(data) and is recycled
         idx <- (imps == j) & unlist(where[, varname])
         ini$imp[[varname]][j] <- long[idx, varname]
       }
     }
   }
-  ini
+  
+  return(ini)
 }
 
 #' Create a \code{mira} object from repeated analyses
