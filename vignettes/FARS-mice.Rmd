@@ -1,7 +1,7 @@
 ---
 title: "Using mice for multiply imputed FARS data"
 author: "Stas Kolenikov"
-date: "2025-07-09"
+date: "2025-07-28"
 output: rmarkdown::html_vignette
 vignette: >
   %\VignetteIndexEntry{FARS-2}
@@ -24,11 +24,36 @@ library(janitor)  # occasional tabulations
 library(stringr)  # string processing
 library(tidyr)    # reshape; functionality is imported to dplyr
 library(labelled) # to deal with as.factor() gracefully
+
+# helper function
+mipo_to_indicative <- function(mipo.object) {
+  this_df <- mipo.object$pooled
+  
+  this_df %>%  
+    dplyr::arrange(estimate) %>% 
+    dplyr::slice(c(1,nrow(this_df))) -> estimate_min_max
+  this_df %>%  
+    dplyr::arrange(fmi) %>% 
+    dplyr::slice(c(1,nrow(this_df))) -> fmi_min_max
+  this_df %>%  
+    dplyr::arrange(df) %>% 
+    dplyr::slice(c(1,nrow(this_df))) -> df_min_max
+  
+  dplyr::distinct(
+    dplyr::bind_rows(
+      estimate_min_max, fmi_min_max, df_min_max
+    )
+  ) %>% dplyr::arrange(term) %>% 
+    dplyr::mutate(term=as.character(term), 
+      term = term %>% 
+        stringr::str_replace_all(stringr::fixed("as.factor("), "") %>% 
+        stringr::str_replace_all(stringr::fixed(")"), "==")) 
+}
 ```
 
 ## FARS data
 
-[Fatality Analysis Reporting) System](https://www.nhtsa.gov/research-data/fatality-analysis-reporting-system-fars) 
+[Fatality Analysis Reporting System](https://www.nhtsa.gov/research-data/fatality-analysis-reporting-system-fars) 
 is a census of all police-reported 
 fatal crashes in the United States, assembled and maintained
 by the [National Highway Traffic Safety Administration](https://www.nhtsa.gov/) (NHTSA), 
@@ -42,12 +67,12 @@ One of the FARS variables is multiply imputed:
 blood alcohol content (BAC). The variable is missing in about 25%
 of the raw data, but given its high policy relevance,
 a custom imputation model for it was built at the time
-of multiple imputation adolescence
+that can be considered "multiple imputation adolescence"
 ([Rubin, Schaffer and Subramanian (1998)](https://crashstats.nhtsa.dot.gov/Api/Public/ViewPublication/808816)): 
 by that time, the idea had been in the literature for two decades and quite well studied,
 but the software to work with multiply imputed data
-was not standardized and streamlined, leaving MI
-an artisan data solution. The imputation model involves:
+was not yet standardized and streamlined, leaving MI implentations to be
+artisan data solutions. The FARS BAC imputation model involves:
 
 1. Separating cases by vehicle class (passenger cars;
 utility vehicles; light trucks and vans; minivans; 
@@ -67,7 +92,8 @@ parameters followed by back transformation to the original BAC scale.
 The results are released in the file 
 `miper`, and they are aggregated to the crash level
 (the highest BAC among all persons involved in the crash in `miacc` file, 
-and the highest BAC among all drivers in `midrvacc` file). These files are presented in the wide format
+and the highest BAC among all drivers in `midrvacc` file). 
+These files are presented in the wide format
 (i.e., each row of the dataset represents one row
 of the original data, and the imputations are identified
 by suffixes of the column names of the imputed variables,
@@ -75,12 +101,132 @@ e.g. `P1` through `P10` in `miper` file).
 
 ## Foundations of MI and `mice` package
 
+Multiple imputation seeks to create multiple completed sets of data
+that can be analyzed with the "standard" statistical software
+for complete data. If the missing data were imputed only once,
+the amount of available information that would come from the analysis
+of the thus completed data will be overstated, the standard errors
+will be too small, and statistical significance overstated.
+Mathematics of multiple imputation is calibrated to produce results
+that are statistically correct, i.e. the standard errors 
+accurately reflect variability in estimates between possible samples,
+and tests have appropriate levels.
+
+After $M$ completed data sets are created, the statistical analysis
+of the analyst's interest is conducted on each of those data sets,
+producing estimates $\hat Q_1, \ldots, \hat Q_M$ along with the
+variance-covariance matrices $U_1, \ldots, U_M$. Then the overall
+estimate is obtained as
+
+$$
+\bar Q = \frac 1M \sum_{l=1}^M Q_l
+$$
+
+and the appropriate variance estimate is
+
+$$
+T = \bar U + B + \frac 1M B; 
+$$
+
+where
+
+$$
+\quad \bar U = \frac 1M \sum_{l=1}^M, U_l
+$$
+
+is the average of the complete data variances, and
+
+$$
+\quad B = \frac 1{M-1} \sum_{l=1}^M (\hat Q_l - \bar Q) (\hat Q_l - \bar Q)'
+$$
+
+is variance between imputations. The total variance is the sum
+of the conventional sampling error produced on the hypothetical complete data,
+extra variance due to the missing data, and the extra simulation variance
+caused by the fact that $Q$ has to be estimated. These expressions
+are often referred as _Rubin's combining rules_ after the author of the 
+multiple imputation concept, Donald Rubin.
+
+Useful descriptive variance ratios are 
+
+$$
+\lambda = \frac{B + B/M}{T}
+$$
+
+and the relative increase in variance
+
+$$
+r = \frac{B + B/M}{\bar U}
+$$
+
+When there is no missing data, $B \equiv 0$ and $\lambda=r=0$, thus
+indicating the relative extent of how much the missing data is a problem.
+
+For relative small values of $M$, the analyst needs to account for 
+the finite _degrees of freedom_. In many statistical analyses, degrees of freedom 
+corresponds to the number of independent ways a computed quantity 
+(an estimate or a test statistic) could vary from sample to sample, 
+for a given way to collect the data and conduct the statistical analysis. 
+While in the complete data analysis, the degrees of freedom are usually 
+associated with the sample size (often minus the number of estimated parameters), 
+for the MI data, the degrees of freedom may be limited by the number of imputations. 
+Consider the most extreme scenario when imputation is white noise; 
+then the number of ways a statistic computed on this data, assuming 
+that the random seeds for data generation are fixed upfront, 
+is the number of imputations $M$. 
+A low number of degrees of freedom would produce unnecessarily 
+long confidence intervals. 
+
+An asymptotic degrees of freedom that relates mostly to the number of imputations is
+
+$$
+\nu_1 = \frac{M-1}{\lambda^2}
+$$
+
+For complete data with $\lambda=0$, this number is $\infty$, which may not be
+satisfactory as the degrees of freedom from the complete analysis (in regression setting) 
+is finite at $\nu_{\rm compl} = n-k$ where $n$ is the number of rows of data and 
+$k$ is the number of estimated parameters. Then the estimated observed
+data degrees of freedom is
+
+$$
+\nu_2 = \frac{\nu_{\rm compl} + 1}{\nu_{\rm compl} + 3}\nu_{\rm compl} (1-\lambda)
+$$
+
+and hence the combined degrees of freedom that is capped by both is their
+geometric average
+
+$$
+\nu = \frac{\nu_1 \nu_2}{\nu_1 + \nu_2}
+$$
+
+_Fraction of missing information_ (FMI) is commonly defined as 
+the ratio of the variance in estimates between imputations to the total variance, 
+corrected by degrees of freedom. While the ratio $\lambda$ gives an initial
+idea of how much variance is due to missing data, the more accurate
+expression also involves the degrees of freedom, and is given by
+
+$$
+\gamma = \frac{r + 2/(\nu+3)}{1+r}
+$$
+
+A large value of FMI indicates a substantial increase in variance 
+due to missing data, and a high level of uncertainty about 
+the imputation process (i.e. models that are not accurate enough may 
+produce highly biased results).
+
+All of the above expressions are estimate- and parameter-specific,
+and may vary substantially from e.g. one predictor variable to another
+in regression analysis, depending on the patterns of missing data
+and the intercorrelations of variables.
+
+
 ## Requirements of `mice` package workflow
 
 The multiply imputed data sets are not simple rectangular 
 data frames. The objects that `mice` package works with are 
-[sophisticated data objects](https://amices.org/mice/reference/mids.html) enriched with all
-of the appropriate metadata documenting the missing
+[sophisticated data objects](https://amices.org/mice/reference/mids.html) 
+enriched with all of the appropriate metadata documenting the missing
 data patterns and imputation process
 (location of the item missing values in the data set,
 imputation models used, covariates used in each model,
@@ -383,6 +529,21 @@ miper_mids <- as.mids(
 )
 ```
 
+### Analysis and pooling
+
+Suppose our analysis of interest is the average BAC
+across hours of the day. The first complication is that
+a statistic as simple as the mean with its standard error
+is relatively difficult to get: analyses that produce the standard
+errors as a part of an R object are usually more complicated.
+We can, however, utilize the fact that averages over categories
+of a variable are coefficients in a regression with a factor
+variable, so we can use syntax like 
+`lm(PER_BAC ~ 0 + as.factor(HOUR))` for this analysis,
+where the term `+ 0` indicates that the intercept should 
+be omitted from the analysis.
+
+
 The online book "Flexible Imputation of Missing Data"
 discusses [several possible workflows](https://stefvanbuuren.name/fimd/workflow.html). 
 Workflow 1 is the "base R" flavor using `with()` and `mice::pool()`:
@@ -398,27 +559,87 @@ drink_by_hour_est1$pooled %>%
   knitr::kable()
 ```
 
-This approach makes it rather difficult to customize analysis,
-e.g. to restrict it to drivers. 
+## Alternative workflow of MI analysis
+
+The above approach ("Workflow 1") makes it rather difficult to customize analysis,
+e.g. to restrict it to drivers, among all persons. 
 The latter is possible to do so with workflow 7. 
 Instead of creating the interim `mids` object,
 it deals with the "long" file directly:
 
 ```{r drink_by_time7}
 person_long %>% 
+  # remove the original data
   filter(imp_index > 0) %>% 
+  # set the data up by imputation index
   group_by(imp_index) %>%
+  # perform complete data analysis
   do(model = lm(formula = PER_BAC ~ 0 + as.factor(HOUR), 
                 data = subset(., PER_TYP==1))) %>%
-  as.list() %>%
-  .[[-1]] %>%
+  # convert from data frame of models to a list of models
+  as.list() %>% .[[-1]] %>%
+  # pool results using Rubin's formulas
   pool() -> drink_by_hour_est7
+
 drink_by_hour_est7$pooled %>% 
   mutate(term = as.character(term), 
          term = stringr::str_replace_all(term, stringr::fixed("as.factor(HOUR)"), "HOUR==")) %>% 
   mutate(across(where(is.numeric), ~ round(.x, digits=3L))) %>% 
   knitr::kable()
 ```
+
+Note that the "original" data have to be excluded from the analysis
+with `filter(imp_index>0)`. 
+
+This workflow appears much simpler, aleviating the need for complicated 
+intermediate structures such as `where`, although this workflow relies 
+on a different set of intermediate steps, including deprecated `dplyr::do()`,
+with their own potential complications for other types of analysis.
+
+### Updated workflow with dplyr 1.0.0+
+
+The reference page for [`dplyr::do()`](https://dplyr.tidyverse.org/reference/do.html)
+states that its [lifecycle](https://lifecycle.r-lib.org/articles/stages.html) status
+is "superseded". It means there is a better alternative although
+the old function is not going away (that is the "deprecated" status
+where the old function's behavior is considered unsafe, unreliable, or ambiguous.)
+
+The proposed replacement is a combination of 
+[`dplyr::nest_by()`](https://dplyr.tidyverse.org/reference/nest_by.html)
+which creates a data frame with one row per group,
+and `mutate` which creates a column of model results
+for `pool()` to work with.
+With that replacement, the version of Workflow 7 will be:
+
+```{r drink_by_time8}
+person_long %>% 
+  # remove the original data
+  filter(imp_index > 0) %>% 
+  # set the data up by imputation index
+  nest_by(imp_index) %>%
+  # perform complete data analysis
+  mutate(model = lm(formula = PER_BAC ~ 0 + as.factor(HOUR), 
+                data = subset(., PER_TYP==1))) %>%
+  # convert from data frame of models to a list of models
+  as.list() %>% 
+  # pick up the model field from each corresponding model object    
+  purrr::pluck("model") %>%
+  # pool results using Rubin's formulas
+  pool() -> drink_by_hour_est8
+
+drink_by_hour_est8$pooled %>% 
+  mutate(term = as.character(term), 
+         term = stringr::str_replace_all(term, stringr::fixed("as.factor(HOUR)"), "HOUR==")) %>% 
+  mutate(across(where(is.numeric), ~ round(.x, digits=3L))) %>% 
+  knitr::kable()
+```
+
+## Figure out how to use `future`
+
+The imputation task can be sped up considerably (in human time) by using
+parallel processing with `future`.
+
+## Interpretation of the MI results
 
 Both sets of estimates point to elevated presence of alcohol late at night.
 The estimates do not agree with one another, as they are based on
@@ -430,6 +651,8 @@ and in the afternoon are "easy to predict": there are few drunk drivers,
 and the missing values of BAC can often be predicted as zeroes. 
 While the data on BAC are missing, there is not much uncertainty
 as to the BAC levels, which is reflected in low levels of FMI.
+(A review of the imputed values of BAC when they were truly missing
+in the original data often shows rows of zeroes.)
 As drinking ramps up in the evening and at night, the missing values
 of BAC may have more variability when the extent of driver's intoxication
 cannot be established. FMI rises accordingly.
@@ -443,3 +666,9 @@ The low FMI seems to indicate that the BAC levels encountered
 in those crashes that the levels of BAC were not hard to predict
 when they were missing.
 
+As a side note, we attempted an alternative to the regression formulation 
+of the descriptive statistics found in the package `survey` that
+produces the descriptive statistics for complex survey data.
+Unfortunately, since output of `svymean()` or `svyby()` or `svyprop()`
+is not compatible with `mice::pool()` (or, to be specific, with
+the `broom` processing of the results), we could not find a working solution.
