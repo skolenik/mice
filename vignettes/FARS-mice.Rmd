@@ -24,6 +24,7 @@ library(janitor)  # occasional tabulations
 library(stringr)  # string processing
 library(tidyr)    # reshape; functionality is imported to dplyr
 library(labelled) # to deal with as.factor() gracefully
+library(furrr)    # extension to purrr with future parallel processing
 
 # helper function
 mipo_to_indicative <- function(mipo.object) {
@@ -427,7 +428,7 @@ rename the relatively uninformative variable `P` to something
 [more powerfully named](https://www.oreilly.com/library/view/code-complete-2nd/0735619670/ch11.html).
 We will call the imputation index `imp_index`.
 
-```{r mipar-to-long}
+```{r miper-to-long}
 miper %>% 
   tidyr::pivot_longer(cols      = matches("P[0-9]+"),
                       names_to  = "imp_index", 
@@ -618,8 +619,8 @@ person_long %>%
   # set the data up by imputation index
   nest_by(imp_index) %>%
   # perform complete data analysis
-  mutate(model = lm(formula = PER_BAC ~ 0 + as.factor(HOUR), 
-                data = subset(., PER_TYP==1))) %>%
+  mutate(model = list(lm(formula = PER_BAC ~ 0 + as.factor(HOUR), 
+                data = (data %>% filter(PER_TYP==1))))) %>%
   # convert from data frame of models to a list of models
   as.list() %>% 
   # pick up the model field from each corresponding model object    
@@ -632,12 +633,42 @@ drink_by_hour_est8$pooled %>%
          term = stringr::str_replace_all(term, stringr::fixed("as.factor(HOUR)"), "HOUR==")) %>% 
   mutate(across(where(is.numeric), ~ round(.x, digits=3L))) %>% 
   knitr::kable()
+
+testthat::expect_equal(drink_by_hour_est7, drink_by_hour_est8)
 ```
 
-## Figure out how to use `future`
+### Speed up analysis with `future` parallel computation
 
 The imputation task can be sped up considerably (in human time) by using
-parallel processing with `future`.
+parallel processing with `future`. Likewise, if the estimation step itself
+is slow in the MI pipeline, it can be expedited by parallel processing:
+
+```{r drink_by_time9}
+person_long %>% 
+  # remove the original data
+  filter(imp_index > 0) %>% 
+  # set the data up by imputation index
+  nest_by(imp_index) %>%
+  # perform complete data analysis
+  furrr::future_pmap(.f = function(...) {
+      the_dots <- rlang::list2(...)
+      # implicit return
+      lm(formula = PER_BAC ~ 0 + as.factor(HOUR), 
+         data = the_dots$data %>% filter(PER_TYP==1))
+    }
+  ) %>%
+  # pool results using Rubin's formulas
+  pool() -> drink_by_hour_est9
+
+drink_by_hour_est9$pooled %>% 
+  mutate(term = as.character(term), 
+         term = stringr::str_replace_all(term, stringr::fixed("as.factor(HOUR)"), "HOUR==")) %>% 
+  mutate(across(where(is.numeric), ~ round(.x, digits=3L))) %>% 
+  knitr::kable()
+
+testthat::expect_equal(drink_by_hour_est7, drink_by_hour_est9)
+```
+
 
 ## Interpretation of the MI results
 
