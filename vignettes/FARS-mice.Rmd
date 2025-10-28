@@ -669,6 +669,29 @@ drink_by_hour_est9$pooled %>%
 testthat::expect_equal(drink_by_hour_est7, drink_by_hour_est9)
 ```
 
+Let us unpack this code a little bit. `furrr::future_pmap()` is a function 
+in the `furrr` package which is provides the cross of the mapping 
+functionality of `purrr` package (a part of `tidyverse`) with parallel
+processing implemented in `future` package. The `future` package
+is already used in `mi::mice()` (in older versions, `mi::future_mice()`)
+to run imputations in parallel. The `nest_by()` step creates
+a tibble with two columns: `imp_index`, the imputation index,
+and `data`, tibble corresponding to the data in that imputation.
+What `furrr::future_pmap()` (and its sequential computation predecessor,
+`purrr::pmap()`) does is it picks up the next line in the data frame
+and passes it to the function specified in the `.f` argument.
+The entirety of that row is passed as the `...` to `pmap()`,
+and the call `.f = function(...)` is simply using that whole row.
+As mentioned a few lines above, there are only two columns,
+`imp_index` and `data`. We are not making any use of the imputation 
+number itself, but we need to get the data to run the estimation
+procedure of interest. `rlang::list2(...)` converts the `...` into a list
+with named entries corresponding to the columns of the data frame,
+i.e. `imp_index` and `data`. Finally, we use `the_dots$data` as
+the `data = ` argument of `lm()`, and we apply the filtering operation
+to it as needed. The return value of `purrr::pmap()` and `furrr::future_map()`
+is a list, and it is ready to be `pool()`ed without any additional
+data transformations.
 
 ## Interpretation of the MI results
 
